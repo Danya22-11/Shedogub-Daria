@@ -1,0 +1,57 @@
+SET search_path TO pitanie, public;
+
+-- Общая часть О1. Количество заказов
+SELECT COUNT(*) AS total_orders FROM orders;
+SELECT COUNT(*) AS cancelled_orders FROM orders WHERE status = 'Отменён';
+
+-- Общая часть О2. Продукция со сроком годности <= 14 дней
+SELECT product_name, shelf_life_days
+FROM products
+WHERE shelf_life_days <= 14
+ORDER BY shelf_life_days ASC, product_name ASC;
+
+-- Задание Б1. Партии с высоким браком (> 5%)
+SELECT batch_id, batch_number, line_id, shift, produced_qty, defect_qty,
+       ROUND(defect_qty * 1.0 / produced_qty * 100, 2) AS defect_pct
+FROM production_batches
+WHERE defect_qty > 0.05 * produced_qty
+ORDER BY (defect_qty * 1.0 / produced_qty) DESC;
+
+-- Задание Б1. Проверка гипотезы (на других линиях/сменах)
+SELECT COUNT(*) AS other_batches_with_high_defect
+FROM production_batches
+WHERE defect_qty > 0.05 * produced_qty
+  AND NOT (line_id = 3 AND shift = 'Ночь');
+
+-- Задание Б3. Незакрытые простои
+SELECT downtime_id, line_id, start_time, reason
+FROM equipment_downtime
+WHERE end_time IS NULL
+ORDER BY start_time ASC;
+
+-- Задание Б4. Простои линии 2 за 2024 и 2025 годы
+SELECT COUNT(*) AS downtimes_2024
+FROM equipment_downtime
+WHERE line_id = 2 AND start_time >= '2024-01-01' AND start_time < '2025-01-01';
+
+SELECT COUNT(*) AS downtimes_2025
+FROM equipment_downtime
+WHERE line_id = 2 AND start_time >= '2025-01-01' AND start_time < '2026-01-01';
+
+-- Задание Б6. Поставщики «на проверку» (рейтинг < 4.0 или NULL)
+SELECT supplier_id, supplier_name, rating, contract_date
+FROM suppliers
+WHERE rating IS NULL OR rating < 4.0
+ORDER BY rating ASC NULLS FIRST;
+
+-- Задание Б8. Топ-10 списаний с истекшим сроком
+SELECT writeoff_id, material_id, writeoff_date, quantity, amount, reason 
+FROM material_writeoffs 
+WHERE LOWER(reason) LIKE '%истёк срок годности%' 
+ORDER BY amount DESC 
+LIMIT 10;
+
+-- Задание Б9. Итоговая сумма списаний (клубничный наполнитель)
+SELECT COUNT(*) AS writeoffs_cnt, SUM(amount) AS writeoffs_rub 
+FROM material_writeoffs 
+WHERE material_id = 10 AND LOWER(reason) LIKE '%истёк срок годности%';

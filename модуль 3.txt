@@ -1,0 +1,56 @@
+SET search_path TO pitanie, public;
+
+-- Задание Б1. Партии с линией, продуктом и оператором
+SELECT b.batch_number, b.production_date, b.shift, l.line_name, p.product_name, e.full_name AS operator,
+       b.produced_qty, b.defect_qty,
+       ROUND(100.0 * b.defect_qty / NULLIF(b.produced_qty, 0), 2) AS defect_pct
+FROM production_batches AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+JOIN products AS p ON p.product_id = b.product_id
+JOIN employees AS e ON e.employee_id = b.operator_id
+WHERE b.production_date >= '2025-01-01' AND b.production_date < '2026-01-01';
+
+-- Задание Б2. Сводка по операторам проблемной смены (Линия 3, Ночь)
+SELECT l.line_name, b.shift, e.full_name AS operator, COUNT(*) AS high_defect_batches
+FROM production_batches AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+JOIN employees AS e ON e.employee_id = b.operator_id
+WHERE 100.0 * b.defect_qty / b.produced_qty > 6
+GROUP BY l.line_name, b.shift, e.full_name
+ORDER BY high_defect_batches DESC;
+
+-- Задание Б3. Ответственные за линии и их руководители (SELF-JOIN)
+SELECT l.line_id, l.line_name, l.launch_year, e.full_name AS responsible, m.full_name AS manager
+FROM production_lines AS l
+JOIN employees AS e ON e.employee_id = l.responsible_id
+LEFT JOIN employees AS m ON m.employee_id = e.manager_id
+ORDER BY l.launch_year;
+
+-- Задание Б4. Поставки сахара за 2025 год
+SELECT po.po_number, po.order_date, s.supplier_name, m.material_name,
+       poi.quantity, poi.unit_price, (poi.quantity * poi.unit_price) AS line_sum
+FROM purchase_order_items AS poi
+JOIN purchase_orders AS po ON po.po_id = poi.po_id
+JOIN suppliers AS s ON s.supplier_id = po.supplier_id
+JOIN raw_materials AS m ON m.material_id = poi.material_id
+WHERE poi.material_id = 4 
+  AND po.order_date >= '2025-01-01' AND po.order_date < '2026-01-01'
+ORDER BY poi.unit_price DESC;
+
+-- Задание Б6. Опоздания поставок более 3 дней
+SELECT s.supplier_name, m.material_name, po.expected_date, poi.received_date,
+       (poi.received_date - po.expected_date) AS delay_days, poi.quality_status
+FROM purchase_order_items AS poi
+JOIN purchase_orders AS po ON po.po_id = poi.po_id
+JOIN suppliers AS s ON s.supplier_id = po.supplier_id
+JOIN raw_materials AS m ON m.material_id = poi.material_id
+WHERE (poi.received_date - po.expected_date) > 3;
+
+-- Задание Б7. Незакрытые простои
+SELECT l.line_name, e.full_name AS responsible, d.start_time,
+       COALESCE(d.end_time::text, 'НЕ ЗАКРЫТ') AS end_time_status,
+       d.downtime_category, d.reason
+FROM equipment_downtime AS d
+JOIN production_lines AS l ON l.line_id = d.line_id
+JOIN employees AS e ON e.employee_id = l.responsible_id
+WHERE d.end_time IS NULL;
