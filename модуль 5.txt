@@ -1,0 +1,50 @@
+SET search_path TO pitanie, public;
+
+-- Задание Б-1. Закупки дороже средней цены материала
+SELECT COUNT(*) AS items_above_avg
+FROM purchase_order_items AS poi
+WHERE poi.unit_price > (
+    SELECT AVG(poi2.unit_price) 
+    FROM purchase_order_items AS poi2 
+    WHERE poi2.material_id = poi.material_id
+);
+
+-- Задание Б-3. Надёжные поставщики (без статуса "Отклонено")
+SELECT s.supplier_name
+FROM suppliers AS s
+WHERE NOT EXISTS (
+    SELECT 1 FROM purchase_orders AS po
+    JOIN purchase_order_items AS poi ON poi.po_id = po.po_id
+    WHERE po.supplier_id = s.supplier_id AND poi.quality_status = 'Отклонено'
+);
+
+-- Задание Б-4. Партии с браком выше среднего по линии (в 2 раза)
+SELECT l.line_name, b.shift, COUNT(*) AS high_defect_batches
+FROM production_batches AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+WHERE 100.0 * b.defect_qty / b.produced_qty > (
+    SELECT 2 * (SUM(b2.defect_qty)::numeric / SUM(b2.produced_qty))
+    FROM production_batches AS b2
+    WHERE b2.line_id = b.line_id
+)
+GROUP BY l.line_name, b.shift;
+
+-- Задание Б-6. Перерасход сырья сверх нормы (3%)
+SELECT t.line_name, t.material_name, t.fact_qty, t.norm_qty,
+       ROUND(t.fact_qty - t.norm_qty, 2) AS overrun
+FROM (
+    SELECT l.line_name, m.material_name,
+           SUM(mc.quantity) AS fact_qty,
+           SUM(r.qty_per_unit * b.produced_qty) AS norm_qty
+    FROM production_batches AS b
+    JOIN production_lines AS l ON l.line_id = b.line_id
+    JOIN material_consumption AS mc ON mc.batch_id = b.batch_id
+    JOIN recipes AS r ON r.product_id = b.product_id AND r.material_id = mc.material_id
+    JOIN raw_materials AS m ON m.material_id = mc.material_id
+    GROUP BY l.line_name, m.material_name
+) AS t
+WHERE t.fact_qty > t.norm_qty * 1.03;
+
+-- Задание Б-7★. Ловушка ALL + NULL (исправленная версия)
+SELECT supplier_name FROM suppliers
+WHERE rating > ALL (SELECT COALESCE(rating, 0) FROM suppliers WHERE region_id = 1);

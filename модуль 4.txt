@@ -1,0 +1,82 @@
+SET search_path TO pitanie, public;
+
+-- Задание Б1. Брак по линиям и сменам (CUBE)
+SELECT 
+    CASE WHEN GROUPING(l.line_name) = 1 THEN 'ВСЕ ЛИНИИ' ELSE l.line_name END AS line_name,
+    CASE WHEN GROUPING(b.shift) = 1 THEN 'ВСЕ СМЕНЫ' ELSE b.shift END AS shift,
+    COUNT(*) AS batches_cnt,
+    ROUND(100.0 * SUM(b.defect_qty) / NULLIF(SUM(b.produced_qty), 0), 2) AS defect_pct
+FROM production_batches AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+GROUP BY CUBE (l.line_name, b.shift)
+ORDER BY l.line_name, b.shift;
+
+-- Задание Б2. Переплата у ООО "АгроСнаб-М" (supplier_id = 3)
+SELECT m.material_name,
+       ROUND(AVG(poi.unit_price) FILTER (WHERE po.supplier_id = 3), 2) AS price_agrosnab,
+       ROUND(AVG(poi.unit_price) FILTER (WHERE po.supplier_id <> 3), 2) AS price_others,
+       SUM(poi.received_qty) FILTER (WHERE po.supplier_id = 3) AS qty_agrosnab,
+       ROUND(
+           SUM(poi.received_qty) FILTER (WHERE po.supplier_id = 3) * 
+           (AVG(poi.unit_price) FILTER (WHERE po.supplier_id = 3) - AVG(poi.unit_price) FILTER (WHERE po.supplier_id <> 3)), 
+       2) AS overpay_rub
+FROM purchase_order_items AS poi
+JOIN purchase_orders AS po ON po.po_id = poi.po_id
+JOIN raw_materials AS m ON m.material_id = poi.material_id
+WHERE poi.received_qty IS NOT NULL
+GROUP BY m.material_name
+HAVING SUM(poi.received_qty) FILTER (WHERE po.supplier_id = 3) > 0;
+
+-- Задание Б3. Опоздания и качество поставщиков
+SELECT s.supplier_name,
+       COUNT(*) AS total_items,
+       ROUND(AVG(poi.received_date - po.expected_date), 2) AS avg_delay,
+       MAX(poi.received_date - po.expected_date) AS max_delay,
+       COUNT(*) FILTER (WHERE poi.received_date > po.expected_date) AS late_items,
+       COUNT(*) FILTER (WHERE poi.quality_status IN ('Принято частично', 'Отклонено')) AS quality_issues
+FROM purchase_order_items AS poi
+JOIN purchase_orders AS po ON po.po_id = poi.po_id
+JOIN suppliers AS s ON s.supplier_id = po.supplier_id
+WHERE poi.received_date IS NOT NULL
+GROUP BY s.supplier_name
+HAVING AVG(poi.received_date - po.expected_date) > 1
+ORDER BY avg_delay DESC;
+
+-- Задание Б5. Списания сырья
+SELECT m.material_name,
+       COUNT(*) AS writeoffs_cnt,
+       SUM(mw.quantity) AS total_qty,
+       SUM(mw.amount) AS total_amount,
+       STRING_AGG(DISTINCT mw.reason, ', ') AS reasons
+FROM material_writeoffs AS mw
+JOIN raw_materials AS m ON m.material_id = mw.material_id
+GROUP BY m.material_name
+HAVING SUM(mw.amount) > 50000
+ORDER BY total_amount DESC;
+
+-- Задание Б6. Перерасход сырья: факт / норма
+SELECT l.line_name, m.material_name,
+       SUM(r.qty_per_unit * b.produced_qty) AS norm_qty,
+       SUM(mc.quantity) AS fact_qty,
+       ROUND(SUM(mc.quantity) / SUM(r.qty_per_unit * b.produced_qty), 4) AS ratio
+FROM production_batches AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+JOIN material_consumption AS mc ON mc.batch_id = b.batch_id
+JOIN recipes AS r ON r.product_id = b.product_id AND r.material_id = mc.material_id
+JOIN raw_materials AS m ON m.material_id = mc.material_id
+GROUP BY l.line_name, m.material_name
+HAVING SUM(mc.quantity) / SUM(r.qty_per_unit * b.produced_qty) > 1.03
+ORDER BY ratio DESC;
+
+-- Задание Б9. Стоимость перерасхода какао
+SELECT m.material_name,
+       SUM(mc.quantity - (r.qty_per_unit * b.produced_qty)) AS overrun_qty,
+       ROUND(SUM(mc.quantity - (r.qty_per_unit * b.produced_qty)) * 
+             (SELECT SUM(poi.unit_price * poi.received_qty) / SUM(poi.received_qty) 
+              FROM purchase_order_items AS poi WHERE poi.material_id = m.material_id), 2) AS overrun_cost
+FROM production_batches AS b
+JOIN material_consumption AS mc ON mc.batch_id = b.batch_id
+JOIN recipes AS r ON r.product_id = b.product_id AND r.material_id = mc.material_id
+JOIN raw_materials AS m ON m.material_id = mc.material_id
+WHERE b.line_id = 5 AND m.material_id IN (8, 9)
+GROUP BY m.material_id, m.material_name;
