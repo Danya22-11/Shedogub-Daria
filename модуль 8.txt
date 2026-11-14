@@ -1,0 +1,164 @@
+SET search_path TO pitanie, public;
+
+-- Задание Б1. Рейтинг поставщиков по цене и переплата
+WITH base AS (
+    SELECT 
+        poi.material_id,
+        po.supplier_id,
+        SUM(poi.received_qty) AS total_qty,
+        SUM(poi.received_qty * poi.unit_price) / SUM(poi.received_qty) AS avg_price
+    FROM purchase_order_items AS poi
+    JOIN purchase_orders AS po ON po.po_id = poi.po_id
+    WHERE po.order_date >= '2025-01-01' AND po.order_date < '2026-01-01'
+      AND poi.received_qty IS NOT NULL
+    GROUP BY poi.material_id, po.supplier_id
+),
+ranked AS (
+    SELECT 
+        base.*,
+        DENSE_RANK() OVER (PARTITION BY material_id ORDER BY avg_price ASC) AS price_rank,
+        MIN(avg_price) OVER (PARTITION BY material_id) AS best_price
+    FROM base
+)
+SELECT 
+    m.material_name,
+    s.supplier_name,
+    r.avg_price,
+    r.best_price,
+    r.total_qty,
+    ROUND(100.0 * (r.avg_price - r.best_price) / r.best_price, 1) AS overpay_pct,
+    ROUND(r.total_qty * (r.avg_price - r.best_price), 2) AS overpay_rub
+FROM ranked AS r
+JOIN raw_materials AS m ON m.material_id = r.material_id
+JOIN suppliers AS s ON s.supplier_id = r.supplier_id
+WHERE r.price_rank > 1
+ORDER BY overpay_rub DESC
+LIMIT 10;
+
+
+-- Задание Б2. Скользящее среднее брака за 7 смен
+WITH batch_rates AS (
+    SELECT 
+        line_id,
+        production_date,
+        shift,
+        100.0 * defect_qty / NULLIF(produced_qty, 0) AS defect_pct
+    FROM production_batches
+    WHERE production_date >= '2025-01-01' AND production_date < '2026-01-01'
+),
+ma7 AS (
+    SELECT 
+        line_id,
+        production_date,
+        shift,
+        defect_pct,
+        AVG(defect_pct) OVER (
+            PARTITION BY line_id 
+            ORDER BY production_date, shift 
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        ) AS ma7_pct
+    FROM batch_rates
+)
+SELECT 
+    l.line_name,
+    ROUND(AVG(ma7.ma7_pct), 2) AS avg_ma7,
+    ROUND(MAX(ma7.ma7_pct), 2) AS max_ma7,
+    COUNT(*) FILTER (WHERE ma7.ma7_pct > 3.0) AS shifts_over_3pct
+FROM ma7
+JOIN production_lines AS l ON l.line_id = ma7.line_id
+GROUP BY l.line_name
+ORDER BY avg_ma7 DESC;
+
+
+-- Задание Б3. Изменение цены к предыдущей закупке (молочный жир)
+WITH fat_purchases AS (
+    SELECT 
+        po.order_date,
+        poi.unit_price,
+        LAG(poi.unit_price) OVER (ORDER BY po.order_date) AS prev_price
+    FROM purchase_order_items AS poi
+    JOIN purchase_orders AS po ON po.po_id = poi.po_id
+    WHERE poi.material_id = 14 AND poi.received_qty IS NOT NULL
+)
+SELECT 
+    order_date,
+    unit_price,
+    prev_price,
+    ROUND(100.0 * (unit_price - prev_price) / prev_price, 1) AS change_pct
+FROM fat_purchases
+WHERE prev_price IS NOT NULL 
+  AND ABS(100.0 * (unit_price - prev_price) / prev_price) > 10;
+
+
+-- Задание Б4. Нарастающие часы простоя Линии 2 по месяцам
+WITH monthly_hours AS (
+    SELECT 
+        EXTRACT(YEAR FROM start_time) AS yr,
+        EXTRACT(MONTH FROM start_time) AS mon,
+        SUM(EXTRACT(EPOCH FROM end_time - start_time) / 3600) AS hours
+    FROM equipment_downtime
+    WHERE line_id = 2 AND end_time IS NOT NULL
+      AND start_time >= '2024-01-01' AND start_time < '2026-01-01'
+    GROUP BY EXTRACT(YEAR FROM start_time), EXTRACT(MONTH FROM start_time)
+)
+SELECT 
+    mon,
+    COALESCE(SUM(hours) FILTER (WHERE yr = 2024), 0) AS hours_2024,
+    COALESCE(SUM(hours) FILTER (WHERE yr = 2025), 0) AS hours_2025,
+    SUM(COALESCE(hours, 0)) FILTER (WHERE yr = 2024) OVER (ORDER BY mon) AS cumulative_2024,
+    SUM(COALESCE(hours, 0)) FILTER (WHERE yr = 2025) OVER (ORDER BY mon) AS cumulative_2025
+FROM monthly_hours
+ORDER BY mon;
+
+
+-- Задание Б5. Интервалы между поломками (LAG)
+WITH breakdowns AS (
+    SELECT 
+        line_id,
+        start_time,
+        EXTRACT(YEAR FROM start_time) AS yr,
+        start_time - LAG(end_time) OVER (PARTITION BY line_id ORDER BY start_time) AS interval_diff
+    FROM equipment_downtime
+    WHERE downtime_category = 'Поломка оборудования'
+)
+SELECT 
+    l.line_name,
+    b.yr,
+    COUNT(*) AS breakdowns_cnt,
+    ROUND(AVG(EXTRACT(EPOCH FROM b.interval_diff) / 86400), 1) AS avg_interval_days
+FROM breakdowns AS b
+JOIN production_lines AS l ON l.line_id = b.line_id
+WHERE b.interval_diff IS NOT NULL
+GROUP BY l.line_name, b.yr
+ORDER BY l.line_name, b.yr;
+
+
+-- Задание Б6. ABC-анализ закупок по материалам
+WITH material_costs AS (
+    SELECT 
+        m.material_name,
+        SUM(poi.quantity * poi.unit_price) AS total_cost
+    FROM purchase_order_items AS poi
+    JOIN purchase_orders AS po ON po.po_id = poi.po_id
+    JOIN raw_materials AS m ON m.material_id = poi.material_id
+    WHERE po.order_date >= '2025-01-01' AND po.order_date < '2026-01-01'
+    GROUP BY m.material_name
+),
+abc_base AS (
+    SELECT 
+        material_name,
+        total_cost,
+        SUM(total_cost) OVER (ORDER BY total_cost DESC) / SUM(total_cost) OVER () * 100 AS cumulative_pct
+    FROM material_costs
+)
+SELECT 
+    material_name,
+    total_cost,
+    ROUND(cumulative_pct, 1) AS cum_pct,
+    CASE 
+        WHEN cumulative_pct <= 80 THEN 'A'
+        WHEN cumulative_pct <= 95 THEN 'B'
+        ELSE 'C'
+    END AS abc_class
+FROM abc_base
+ORDER BY total_cost DESC;
